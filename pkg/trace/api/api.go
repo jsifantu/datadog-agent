@@ -23,6 +23,8 @@ import (
 
 	"github.com/tinylib/msgp/msgp"
 
+	"github.com/DataDog/datadog-agent/pkg/tagger"
+	"github.com/DataDog/datadog-agent/pkg/tagger/collectors"
 	"github.com/DataDog/datadog-agent/pkg/trace/config"
 	"github.com/DataDog/datadog-agent/pkg/trace/info"
 	"github.com/DataDog/datadog-agent/pkg/trace/metrics"
@@ -38,10 +40,6 @@ const (
 	maxRequestBodyLength = 10 * 1024 * 1024
 	tagTraceHandler      = "handler:traces"
 	tagServiceHandler    = "handler:services"
-
-	// headerTraceCount is the header client implementation should fill
-	// with the number of traces contained in the payload.
-	headerTraceCount = "X-Datadog-Trace-Count"
 )
 
 // Version is a dumb way to version our collector handlers
@@ -71,7 +69,7 @@ const (
 type HTTPReceiver struct {
 	Stats       *info.ReceiverStats
 	RateLimiter *rateLimiter
-	Out         chan pb.Trace
+	Out         chan *Trace
 
 	services chan pb.ServicesMetadata
 	conf     *config.AgentConfig
@@ -88,13 +86,12 @@ type HTTPReceiver struct {
 
 // NewHTTPReceiver returns a pointer to a new HTTPReceiver
 func NewHTTPReceiver(
-	conf *config.AgentConfig, dynConf *sampler.DynamicConfig, out chan pb.Trace, services chan pb.ServicesMetadata,
+	conf *config.AgentConfig, dynConf *sampler.DynamicConfig, out chan *Trace, services chan pb.ServicesMetadata,
 ) *HTTPReceiver {
 	rateLimiterResponse := http.StatusOK
 	if config.HasFeature("429") {
 		rateLimiterResponse = http.StatusTooManyRequests
 	}
-	// use buffered channels so that handlers are not waiting on downstream processing
 	return &HTTPReceiver{
 		Stats:       info.NewReceiverStats(),
 		RateLimiter: newRateLimiter(),
@@ -266,12 +263,13 @@ func traceCount(req *http.Request) int64 {
 }
 
 func (r *HTTPReceiver) tagStats(req *http.Request) *info.TagStats {
-	return r.Stats.GetTagStats(info.Tags{
-		Lang:          req.Header.Get("Datadog-Meta-Lang"),
-		LangVersion:   req.Header.Get("Datadog-Meta-Lang-Version"),
-		Interpreter:   req.Header.Get("Datadog-Meta-Lang-Interpreter"),
-		TracerVersion: req.Header.Get("Datadog-Meta-Tracer-Version"),
-	})
+	tags := info.Tags{
+		Lang:          req.Header.Get(headerLang),
+		LangVersion:   req.Header.Get(headerLangVersion),
+		Interpreter:   req.Header.Get(headerLangInterpreter),
+		TracerVersion: req.Header.Get(headerTracerVersion),
+	}
+	return r.Stats.GetTagStats(tags)
 }
 
 func (r *HTTPReceiver) decodeTraces(v Version, req *http.Request) (pb.Traces, error) {
@@ -297,6 +295,32 @@ func (r *HTTPReceiver) replyOK(v Version, w http.ResponseWriter) {
 		httpRateByService(w, r.dynConf)
 	}
 }
+
+const (
+	// headerTraceCount is the header client implementation should fill
+	// with the number of traces contained in the payload.
+	headerTraceCount = "X-Datadog-Trace-Count"
+
+	// headerContainerID specifies the header name which contains information about the
+	// source container, pod, image, etc. identifier.
+	headerContainerID = "Datadog-Container-ID"
+
+	// headerLang specifies the name of the header which contains the language from
+	// which the traces originate.
+	headerLang = "Datadog-Meta-Lang"
+
+	// headerLangVersion specifies the name of the header which contains the origin
+	// language's version.
+	headerLangVersion = "Datadog-Meta-Lang-Version"
+
+	// headerLangInterpreter specifies the name of the HTTP header containing information
+	// about the language interpreter, where applicable.
+	headerLangInterpreter = "Datadog-Meta-Lang-Interpreter"
+
+	// headerTracerVersion specifies the name of the header which contains the version
+	// of the tracer sending the payload.
+	headerTracerVersion = "Datadog-Meta-Tracer-Version"
+)
 
 // handleTraces knows how to handle a bunch of traces
 func (r *HTTPReceiver) handleTraces(v Version, w http.ResponseWriter, req *http.Request) {
@@ -329,12 +353,29 @@ func (r *HTTPReceiver) handleTraces(v Version, w http.ResponseWriter, req *http.
 			r.wg.Done()
 			watchdog.LogOnPanic()
 		}()
-		r.processTraces(ts, traces)
+		entityID := req.Header.Get(headerContainerID)
+		r.processTraces(ts, entityID, traces)
 	}()
 }
 
-func (r *HTTPReceiver) processTraces(ts *info.TagStats, traces pb.Traces) {
+// Trace specifies information about a trace received by the API.
+type Trace struct {
+	// Source specifies information about the source of these traces, such as:
+	// language, interpreter, tracer version, etc.
+	Source *info.Tags
+
+	// EntityTags specifies orchestrator tags corresponding to the origin of this
+	// trace (e.g. K8S pod, Docker image, ECS, etc).
+	EntityTags map[string]string
+
+	// Spans holds the spans of this trace.
+	Spans pb.Trace
+}
+
+func (r *HTTPReceiver) processTraces(ts *info.TagStats, entityID string, traces pb.Traces) {
 	defer timing.Since("datadog.trace_agent.internal.normalize_ms", time.Now())
+
+	entityTags := getEntityTags(entityID)
 	for _, trace := range traces {
 		spans := len(trace)
 
@@ -347,7 +388,11 @@ func (r *HTTPReceiver) processTraces(ts *info.TagStats, traces pb.Traces) {
 			continue
 		}
 
-		r.Out <- trace
+		r.Out <- &Trace{
+			Source:     &ts.Tags,
+			EntityTags: entityTags,
+			Spans:      trace,
+		}
 	}
 }
 
@@ -362,17 +407,7 @@ func (r *HTTPReceiver) handleServices(v Version, w http.ResponseWriter, req *htt
 
 	httpOK(w)
 
-	// We parse the tags from the header
-	tags := info.Tags{
-		Lang:          req.Header.Get("Datadog-Meta-Lang"),
-		LangVersion:   req.Header.Get("Datadog-Meta-Lang-Version"),
-		Interpreter:   req.Header.Get("Datadog-Meta-Lang-Interpreter"),
-		TracerVersion: req.Header.Get("Datadog-Meta-Tracer-Version"),
-	}
-
-	// We get the address of the struct holding the stats associated to the tags
-	ts := r.Stats.GetTagStats(tags)
-
+	ts := r.tagStats(req)
 	atomic.AddInt64(&ts.ServicesReceived, int64(len(servicesMeta)))
 
 	bytesRead := req.Body.(*LimitedReader).Count
@@ -530,6 +565,37 @@ func tracesFromSpans(spans []pb.Span) pb.Traces {
 	}
 
 	return traces
+}
+
+// getEntityTags returns tags belonging to entityID. If entityID is empty or no
+// tags are found, an empty map is returned.
+func getEntityTags(entityID string) map[string]string {
+	if entityID == "" {
+		return map[string]string{}
+	}
+	// for now, only Kubernetes is supported
+	list, err := tagger.Tag("container_id://"+entityID, collectors.HighCardinality)
+	if err != nil {
+		return map[string]string{}
+	}
+	tags := make(map[string]string, len(list))
+	for _, tag := range list {
+		// this is a metrics product style tag; either a "key:value" pair,
+		// or simply "key", without a value.
+		parts := strings.Split(tag, ":")
+		if parts[0] == "" {
+			continue
+		}
+		k := "container." + parts[0]
+		if len(parts) > 1 {
+			// key and value
+			tags[k] = parts[1]
+		} else {
+			// key only
+			tags[k] = ""
+		}
+	}
+	return tags
 }
 
 // getMediaType attempts to return the media type from the Content-Type MIME header. If it fails

@@ -11,7 +11,12 @@ from .build_tags import get_build_tags, get_default_build_tags, LINUX_ONLY_TAGS,
 from .go import deps
 
 BIN_PATH = os.path.join(".", "bin", "trace-agent")
-DEFAULT_BUILD_TAGS = ["netcgo", "secrets"]
+DEFAULT_BUILD_TAGS = [
+    "netcgo",
+    "secrets",
+    "kubeapiserver",
+    "kubelet",
+]
 
 @task
 def build(ctx, rebuild=False, race=False, precompile_only=False, build_include=None,
