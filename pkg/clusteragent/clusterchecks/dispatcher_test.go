@@ -479,32 +479,32 @@ func TestBuildEndpointsChecks(t *testing.T) {
 	expectedResult1 := map[string][]integration.Config{
 		"nodename1": {
 			{
-				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod://pod-uid-1", "kube_service://myservice-uid"},
+				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod_uid://pod-uid-1", "kube_service://myservice-uid"},
 			},
 		},
 		"nodename2": {
 			{
-				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod://pod-uid-2", "kube_service://myservice-uid"},
+				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod_uid://pod-uid-2", "kube_service://myservice-uid"},
 			},
 		},
 		"nodename3": {
 			{
-				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod://pod-uid-3", "kube_service://myservice-uid"},
+				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod_uid://pod-uid-3", "kube_service://myservice-uid"},
 			},
 		},
 	}
 	expectedResult2 := map[string][]integration.Config{
 		"nodename1": {
 			{
-				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod://pod-uid-1", "kube_service://myservice-uid"},
+				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod_uid://pod-uid-1", "kube_service://myservice-uid"},
 			},
 		},
 		"nodename2": {
 			{
-				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod://pod-uid-2", "kube_service://myservice-uid"},
+				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod_uid://pod-uid-2", "kube_service://myservice-uid"},
 			},
 			{
-				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod://pod-uid-3", "kube_service://myservice-uid"},
+				ADIdentifiers: []string{"kube_endpoint://default/myservice", "kubernetes_pod_uid://pod-uid-3", "kube_service://myservice-uid"},
 			},
 		},
 	}
