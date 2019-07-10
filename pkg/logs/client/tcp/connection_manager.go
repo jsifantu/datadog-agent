@@ -43,6 +43,10 @@ func NewConnectionManager(endpoint config.Endpoint) *ConnectionManager {
 	}
 }
 
+type timeoutError struct{}
+
+func (timeoutError) Error() string { return "tls: Handshake timed out" }
+
 // NewConnection returns an initialized connection to the intake.
 // It blocks until a connection is available
 func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error) {
@@ -79,7 +83,6 @@ func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error
 		}
 
 		var conn net.Conn
-
 		if cm.endpoint.ProxyAddress != "" {
 			var dialer proxy.Dialer
 			dialer, err = proxy.SOCKS5("tcp", cm.endpoint.ProxyAddress, nil, proxy.Direct)
@@ -105,8 +108,7 @@ func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error
 			sslConn := tls.Client(conn, &tls.Config{
 				ServerName: cm.endpoint.Host,
 			})
-			// TODO: handle timeouts with ctx.
-			err = sslConn.Handshake()
+			err = cm.handshakeWithTimeout(sslConn, connectionTimeout)
 			if err != nil {
 				log.Warn(err)
 				continue
@@ -119,6 +121,17 @@ func (cm *ConnectionManager) NewConnection(ctx context.Context) (net.Conn, error
 		status.RemoveGlobalWarning(statusConnectionError)
 		return conn, nil
 	}
+}
+
+func (cm *ConnectionManager) handshakeWithTimeout(conn *tls.Conn, timeout time.Duration) error {
+	errChannel := make(chan error, 2)
+	time.AfterFunc(timeout, func() {
+		errChannel <- timeoutError{}
+	})
+	go func() {
+		errChannel <- conn.Handshake()
+	}()
+	return <-errChannel
 }
 
 // address returns the address of the server to send logs to.
